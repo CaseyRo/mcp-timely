@@ -18,6 +18,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+    env:
+      KOMODO_WEBHOOK_SECRET: ${{ secrets.KOMODO_WEBHOOK_SECRET }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -92,9 +94,7 @@ jobs:
       # KOMODO_WEBHOOK_SECRET repo secret is unset (pre-deploy phase) —
       # Komodo 401s every delivery on an empty/mismatched secret.
       - name: Trigger Komodo deploy
-        if: ${{ secrets.KOMODO_WEBHOOK_SECRET != '' }}
-        env:
-          KOMODO_WEBHOOK_SECRET: ${{ secrets.KOMODO_WEBHOOK_SECRET }}
+        if: env.KOMODO_WEBHOOK_SECRET != ''
         run: |
           BODY='{"ref":"refs/heads/main","repository":{"full_name":"CaseyRo/mcp-timely"}}'
           SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KOMODO_WEBHOOK_SECRET" | awk '{print $2}')

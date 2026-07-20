@@ -1,0 +1,59 @@
+name: Dependabot Auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Runs on pull_request_target so it has write access to the repo, but checks
+# out the PR head so tests run against the actual dependency bump. Safe for
+# Dependabot PRs because Dependabot only touches lock/manifest files, not
+# workflow or test code.
+#
+# Only patch-level bumps (or pure-patch groups) auto-merge. Anything with a
+# minor or major in the group is left for review.
+#
+# Tests run inline in this workflow instead of relying on branch protection
+# required status checks, because main isn't currently protected. If/when
+# branch protection is enabled, this workflow still works — it just adds
+# belt-and-braces coverage.
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/checkout@v6
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v6
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+
+      - name: Install and test with bumped deps
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        run: |
+          uv sync
+          uv run pytest -x
+
+      - name: Squash-merge the PR
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --squash --delete-branch "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

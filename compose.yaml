@@ -1,0 +1,25 @@
+services:
+  mcp-timely:
+    image: ghcr.io/caseyro/mcp-timely:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8011:8000"
+    environment:
+      - TRANSPORT=http
+      - HOST=0.0.0.0
+      - MCP_API_KEY=${MCP_API_KEY:-}
+      - TIMELY_CLIENT_ID=${TIMELY_CLIENT_ID:-}
+      - TIMELY_CLIENT_SECRET=${TIMELY_CLIENT_SECRET:-}
+      # Rotating refresh tokens live here — the volume must persist.
+      - TIMELY_TOKEN_FILE=/data/timely_tokens.json
+    volumes:
+      - timely-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  timely-data:

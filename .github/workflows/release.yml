@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'tests/**'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install and test
+        run: |
+          uv sync
+          uv run pytest -x
+
+      - name: Security audit (pip-audit)
+        run: uvx pip-audit
+
+      - name: Bump version
+        id: version
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          CURRENT=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+
+          sed -i "s/^version = \"$CURRENT\"/version = \"$NEW\"/" pyproject.toml
+
+          DATE=$(date +%Y-%m-%d)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          COMMITS=$(git log "$LAST_TAG"..HEAD --oneline --no-merges | sed 's/^[a-f0-9]* /- /')
+          ENTRY="## [$NEW] - $DATE\n\n$COMMITS\n"
+          sed -i "/^# Changelog/a\\\\n${ENTRY}" CHANGELOG.md 2>/dev/null || true
+
+          git add pyproject.toml CHANGELOG.md
+          git commit -m "chore(release): v${NEW} [skip ci]"
+          git tag "v${NEW}"
+          echo "version=${NEW}" >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        run: |
+          git push origin main
+          git push origin --tags
+
+      - name: Set image name
+        run: echo "IMAGE_NAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ env.IMAGE_NAME }}:latest
+
+      # Trigger Komodo to pull the new :latest image and redeploy.
+      # Runs after the GHCR push so the image is guaranteed to exist (the
+      # push-event webhook would race the image build). Skipped while the
+      # KOMODO_WEBHOOK_SECRET repo secret is unset (pre-deploy phase) —
+      # Komodo 401s every delivery on an empty/mismatched secret.
+      - name: Trigger Komodo deploy
+        if: ${{ secrets.KOMODO_WEBHOOK_SECRET != '' }}
+        env:
+          KOMODO_WEBHOOK_SECRET: ${{ secrets.KOMODO_WEBHOOK_SECRET }}
+        run: |
+          BODY='{"ref":"refs/heads/main","repository":{"full_name":"CaseyRo/mcp-timely"}}'
+          SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KOMODO_WEBHOOK_SECRET" | awk '{print $2}')
+
+          HTTP_CODE=$(curl -s -o /tmp/komodo_response.txt -w "%{http_code}" \
+            -X POST "https://komodo.cdit-dev.de/listener/github/stack/git-mcp-timely-nebula/deploy" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: push" \
+            -H "X-Hub-Signature-256: sha256=${SIG}" \
+            -d "$BODY")
+
+          echo "Komodo deploy status: ${HTTP_CODE}"
+          cat /tmp/komodo_response.txt
+
+          if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
+            echo "ERROR: Komodo deploy trigger failed with HTTP ${HTTP_CODE}"
+            exit 1
+          fi

@@ -200,7 +200,9 @@ async def time_spent(
 ) -> TimeSpentResult:
     """[timely] Where did my time go? Server-side rollups for a date range
     (YYYY-MM-DD), grouped by project, client, label, or day, with billable
-    split. Totals are computed by Timely, not client-side."""
+    split. Totals are computed by Timely, not client-side. Day buckets follow
+    the Timely account's timezone (a day's bucket equals the sum of that
+    day's entries)."""
     acc = await session.account_id()
     if group_by in ("project", "client"):
         raw = (

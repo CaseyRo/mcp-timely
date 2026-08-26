@@ -2,7 +2,7 @@
 name = "git-mcp-timely-nebula"
 description = "MCP server for Timely time tracking — question-shaped read tools"
 deploy = true
-tags = ["mcp"]
+tags = ["cdit"]
 
 [stack.config]
 server_id = "nebula-1"

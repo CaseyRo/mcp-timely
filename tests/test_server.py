@@ -236,3 +236,13 @@ async def test_work_log_sorts_by_day_and_maps_entries(client, scoped, monkeypatc
     assert first["timer_running"] is True
     assert "note" not in first or first["note"] is None  # empty note normalised
     assert data["total_hours"] == 2.25
+
+
+async def test_tool_call_writes_one_usage_line(capsys, client, scoped, monkeypatch):
+    monkeypatch.setattr(srv.session, "get", AsyncMock(return_value=_Resp(PROJECTS)))
+    await client.call_tool("projects_overview", {})
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if '"mcp_usage"' in ln]
+    assert len(lines) == 1
+    assert '"server": "timely"' in lines[0]
+    assert '"tool": "projects_overview"' in lines[0]
+    assert '"outcome": "ok"' in lines[0]

@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse
 from .auth import BearerTokenVerifier
 from .config import settings
 from .session import TimelySession
+from .usage import UsageMiddleware
 
 try:
     __version__ = version("mcp-timely")
@@ -35,6 +36,7 @@ if settings.mcp_api_key.get_secret_value():
     _auth = BearerTokenVerifier(settings.mcp_api_key.get_secret_value())
 
 mcp = FastMCP("mcp-timely", auth=_auth)
+mcp.add_middleware(UsageMiddleware("timely"))
 
 
 # -- envelopes ----------------------------------------------------------------

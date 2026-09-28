@@ -6,6 +6,7 @@ Three tools, each ≤2 upstream calls: ``projects_overview``, ``time_spent``,
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -23,7 +24,8 @@ from .session import TimelySession
 from .usage import UsageMiddleware
 
 try:
-    __version__ = version("mcp-timely")
+    # Releases are git tags; the image carries the tag as APP_VERSION.
+    __version__ = os.environ.get("APP_VERSION") or version("mcp-timely")
 except PackageNotFoundError:  # running from a source tree
     __version__ = "dev"
 

@@ -22,19 +22,18 @@ docker compose up                         # HTTP server on :8011 (maps to contai
 
 ## Git & release conventions
 
-Release is fully automated: any push to `main` that changes non-doc files triggers `.github/workflows/release.yml`, which runs tests + pip-audit, bumps the patch in `pyproject.toml`, appends to `CHANGELOG.md`, tags `vX.Y.Z`, builds/pushes a multi-arch image to `ghcr.io/caseyro/mcp-timely`, then triggers the Komodo stack redeploy via signed webhook.
+Releases are tag-only: any push to `main` that changes non-doc files triggers `.github/workflows/release.yml`, which runs tests + pip-audit, pushes the next `vX.Y.Z` tag (nothing is committed to the protected branch), builds/pushes a multi-arch image to `ghcr.io/caseyro/mcp-timely` with the tag baked in as `APP_VERSION` (what `/health` reports), then triggers the Komodo stack redeploy via signed webhook.
 
-- **Never hand-edit `version` in `pyproject.toml`** — the CI owns it.
+- `version` in `pyproject.toml` is stale by design; the git tag is the version. Don't bump it.
 - Include `[skip ci]` in a commit message to skip the release.
 - Pure-markdown and `tests/**` changes don't trigger a release (`paths-ignore`).
-- Rebase feature branches before merging to main, or the auto-bump commit races yours.
 - A green run is not a release: confirm the `v*` tag appeared.
 - The Komodo trigger step is skipped when the `KOMODO_WEBHOOK_SECRET` repo secret is unset; when set, it must match the stack's webhook secret exactly (Komodo 401s silently on mismatch).
 - Dependabot runs weekly (uv, docker, actions ecosystems) with auto-merge; each merged PR ships a release.
 
 ## Architecture
 
-FastMCP 3.x server (src layout, `src/mcp_timely/`) exposing three question-shaped, read-only tools over Timely's API. No write path, no user/team parameters: everything is scoped to the authorized user (account + user id resolved lazily at first call and cached).
+FastMCP 4 server (src layout, `src/mcp_timely/`) exposing three question-shaped, read-only tools over Timely's API. No write path, no user/team parameters: everything is scoped to the authorized user (account + user id resolved lazily at first call and cached).
 
 **Tools** (`server.py`) — each is 1–2 upstream calls; Timely does the aggregation:
 - `projects_overview` — `GET /1.1/{acc}/projects`; hours, budget burn %, unbilled figures
@@ -52,6 +51,14 @@ All tools return pydantic envelopes with a human-readable `summary` and raise `T
 ## Deployment (CDIT-specific)
 
 Komodo stack `git-mcp-timely-nebula` on `nebula-1` (see `komodo.toml`), container port 8000 → host 8011, image `ghcr.io/caseyro/mcp-timely:latest`. Env vars map Komodo variables `TIMELY_CLIENT_ID`, `TIMELY_CLIENT_SECRET`, `MCP_TIMELY_API_KEY`; the token file lives on the `timely-data` volume. Exposed as `mcp-timely.cdit-dev.de` via the cdit-ingress tunnel and registered in the Cloudflare MCP Portal as "Timely" (portal registration is dashboard-only; API tokens lack the AI-Controls scope). Planning lives in the `cdit` OpenSpec store (`openspec/config.yaml` references it); the shipped change is archived there as `2026-07-20-add-timely-mcp`.
+
+## fastmcp 4 idioms
+
+- `fastmcp>=4.0.10,<5.0.0`; streamable-http with `stateless_http=True` passed to `run()`, not the constructor (v4 rejects it there). No `allowed_hosts` workaround — that was the 3.4.3 host guard.
+- Annotations are snake_case (`read_only_hint`, ...). CI and the release test step run with `FASTMCP_MCP_CAMELCASE_COMPAT=false`, so camelCase access fails the build.
+- Failures raise `ToolError`; a returned error payload is logged by usage telemetry as `outcome: ok`.
+- `src/mcp_timely/usage.py` is vendored verbatim from `CDiT-infrastructure/scripts/mcp_usage_middleware.py`; re-copy it, never edit it here.
+- Testing: the `mcp-testing` skill. Release/deploy: the `cdit-release-pipeline` skill. Fleet conventions: `CDiT-infrastructure/docs/wiki/topics/mcp-fleet.md`.
 
 ## Conventions
 

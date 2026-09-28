@@ -18,6 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 USER mcp
 
+# Release version (the git tag); /health reports it. Unset → pyproject version.
+ARG APP_VERSION=""
+ENV APP_VERSION=$APP_VERSION
+
 ENV TRANSPORT=http
 ENV HOST=0.0.0.0
 ENV TIMELY_TOKEN_FILE=/data/timely_tokens.json

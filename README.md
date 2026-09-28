@@ -67,12 +67,12 @@ uv run ruff check .
 ## Releases
 
 Every push to `main` that touches non-doc files releases automatically: tests
-and a security audit run, the patch version bumps, a `vX.Y.Z` tag lands, and a
-multi-arch image is published to `ghcr.io/caseyro/mcp-timely`. Consequences:
+and a security audit run, the next `vX.Y.Z` tag is pushed (no version-bump
+commit), and a multi-arch image is published to `ghcr.io/caseyro/mcp-timely`
+with that version baked in (reported by `/health`). Consequences:
 
-- Don't edit `version` in `pyproject.toml` by hand — CI owns it.
+- The git tag is the version; `version` in `pyproject.toml` is not bumped.
 - Add `[skip ci]` to a commit message to skip a release.
-- Rebase PRs on `main` before merging so the auto-bump commit doesn't race yours.
 - Markdown-only and test-only changes don't trigger a release.
 
 ## License

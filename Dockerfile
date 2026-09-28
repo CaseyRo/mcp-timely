@@ -5,7 +5,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir uv && \
+# ca-certificates: httpx2 uses the OS trust store
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir uv && \
     uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt && \
     pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && \
     pip install --no-cache-dir --no-deps . && \

@@ -127,7 +127,7 @@ async def test_tool_surface_is_exactly_three_read_only_tools(client):
         "work_log",
     ]
     for tool in tools:
-        assert tool.annotations.readOnlyHint is True
+        assert tool.annotations.read_only_hint is True
 
 
 async def test_projects_overview_filters_inactive_and_maps_fields(

@@ -145,7 +145,7 @@ def _slice(entry: dict[str, Any]) -> GroupSlice:
 
 # -- tools --------------------------------------------------------------------
 
-_READ_ONLY = dict(readOnlyHint=True, idempotentHint=True, openWorldHint=True)
+_READ_ONLY = dict(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 
 
 @mcp.tool(
@@ -349,9 +349,6 @@ def main() -> None:
             host=settings.host,
             port=settings.port,
             stateless_http=True,
-            # fastmcp >=3.4.3 rejects non-localhost Host headers with 421 unless
-            # allowed_hosts is set (edge is CF-Access gated).
-            allowed_hosts=["*"],
         )
     else:
         mcp.run()

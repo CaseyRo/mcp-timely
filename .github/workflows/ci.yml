@@ -8,8 +8,6 @@ on:
 permissions:
   contents: read
 
-# NOTE: runs on every PR/push but does NOT yet gate the Komodo auto-deploy —
-# that needs branch protection making `test` a required check.
 jobs:
   test:
     runs-on: ubuntu-latest

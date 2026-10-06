@@ -33,12 +33,13 @@ Releases are tag-only: any push to `main` that changes non-doc files triggers `.
 
 ## Architecture
 
-FastMCP 4 server (src layout, `src/mcp_timely/`) exposing three question-shaped, read-only tools over Timely's API. No write path, no user/team parameters: everything is scoped to the authorized user (account + user id resolved lazily at first call and cached).
+FastMCP 4 server (src layout, `src/mcp_timely/`) exposing three question-shaped read tools plus one narrow write tool over Timely's API. No user/team parameters: everything is scoped to the authorized user (account + user id resolved lazily at first call and cached).
 
-**Tools** (`server.py`) — each is 1–2 upstream calls; Timely does the aggregation:
+**Tools** (`server.py`) — the reads are 1–2 upstream calls each; Timely does the aggregation:
 - `projects_overview` — `GET /1.1/{acc}/projects`; hours, budget burn %, unbilled figures
 - `time_spent` — project/client grouping via `GET /reports` (client rollups with nested projects), day/label via `POST /reports/filter` (group keys are plural: `days`, `labels`; unknown keys return totals with silently empty group arrays). Day buckets follow the account's timezone.
 - `work_log` — user-scoped `GET /users/{id}/events`; entries with notes, billable/billed, timer state
+- `create_entry` — **the only write path** (CDI-1956). `POST /1.1/{acc}/hours`; note that Timely creates events under `/hours`, not `/events`. Resolves `project` and `label` from names to ids so callers need no lookup of their own (the StoryKeep retainer project is renamed monthly), takes `minutes` as an int rather than float hours, and refuses a missing label instead of creating one. Pass `external_id` to make the call repeat-safe: the day's entries are checked first and a match returns `created: false` without writing. Entries price at a real hourly rate on a client retainer, so the day/minutes/note guards run before any write.
 
 All tools return pydantic envelopes with a human-readable `summary` and raise `ToolError` on failure. Durations/money from Timely are objects (`{total_hours, formatted}` / `{amount, formatted, currency_code}`) — the `_hours`/`_formatted`/`_money` helpers parse defensively.
 
@@ -62,6 +63,6 @@ Production runs the published GHCR image via `compose.yaml` (container port 8000
 
 ## Conventions
 
-- Tests use FastMCP's in-memory `Client(mcp)`; upstream is mocked at the session (`AsyncMock`) or via `httpx.MockTransport`. Keep the read-only surface test (`test_tool_surface_is_exactly_three_read_only_tools`) green — it is the spec's guarantee.
+- Tests use FastMCP's in-memory `Client(mcp)`; upstream is mocked at the session (`AsyncMock`) or via `httpx.MockTransport`. Keep the surface test (`test_tool_surface_is_three_reads_and_one_write`) green — it is the spec's guarantee. It asserts the three reads stay read-only and that `create_entry` is the only tool permitted to write, so adding a second write path fails the build until someone decides that deliberately.
 - Public repo: no CDIT internals in README, no secrets anywhere; `.env` and the token file are gitignored.
 - New tools must stay question-shaped: if answering requires the caller to loop or sum, push the aggregation upstream or reshape the tool.

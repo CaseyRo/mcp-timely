@@ -119,15 +119,24 @@ async def client():
         yield c
 
 
-async def test_tool_surface_is_exactly_three_read_only_tools(client):
+async def test_tool_surface_is_three_reads_and_one_write(client):
+    """The spec's guarantee.
+
+    Was "exactly three read-only tools" until CDI-1956 deliberately opened a
+    single write path (`create_entry`) so agent sessions can log their own
+    time. The guarantee is now narrower but still a guarantee: the three reads
+    stay read-only, and `create_entry` is the ONLY tool that may write. A new
+    non-read-only tool fails here on purpose.
+    """
     tools = await client.list_tools()
     assert sorted(t.name for t in tools) == [
+        "create_entry",
         "projects_overview",
         "time_spent",
         "work_log",
     ]
-    for tool in tools:
-        assert tool.annotations.read_only_hint is True
+    writers = sorted(t.name for t in tools if t.annotations.read_only_hint is not True)
+    assert writers == ["create_entry"]
 
 
 async def test_projects_overview_filters_inactive_and_maps_fields(

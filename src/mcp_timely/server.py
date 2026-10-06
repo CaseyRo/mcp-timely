@@ -7,12 +7,14 @@ Three tools, each ≤2 upstream calls: ``projects_overview``, ``time_spent``,
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 from starlette.requests import Request
@@ -105,6 +107,20 @@ class WorkLogResult(BaseModel):
     entries: list[WorkLogEntry]
 
 
+class CreateEntryResult(BaseModel):
+    summary: str
+    created: bool  # False when an entry with this external_id already existed
+    entry_id: int | None = None
+    project_id: int
+    project: str | None = None
+    day: str
+    hours: float
+    hours_formatted: str
+    label: str | None = None
+    note: str | None = None
+    external_id: str | None = None
+
+
 # -- upstream value parsing ---------------------------------------------------
 # Timely durations are objects like {"total_hours": 6.5, "formatted": "06:30"},
 # money values like {"amount": 0.0, "formatted": "€0,00"}. Parse defensively.
@@ -143,6 +159,73 @@ def _slice(entry: dict[str, Any]) -> GroupSlice:
         billable_hours=_hours(entry.get("billable_duration")),
         non_billable_hours=_hours(entry.get("non_billable_duration")),
     )
+
+
+# -- write-path resolution ----------------------------------------------------
+# Callers know names ("StoryKeep Retainer (October)", "claude"), not numeric ids,
+# and the retainer project is renamed every month. Resolve here so the caller
+# never needs a lookup round-trip of its own.
+
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MAX_MINUTES = 24 * 60
+
+
+def _flatten_labels(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Timely labels nest via ``children``; match against parents and children."""
+    out: list[dict[str, Any]] = []
+    for label in raw:
+        out.append(label)
+        out.extend(_flatten_labels(label.get("children") or []))
+    return out
+
+
+async def _resolve_label(acc: int, name: str) -> tuple[int, str]:
+    # Deliberately uncached: the usual failure is "label not created yet", and a
+    # cache would keep serving that miss after the user creates it.
+    raw = (await session.get(f"/1.1/{acc}/labels")).json()
+    wanted = name.strip().casefold()
+    for label in _flatten_labels(raw):
+        if str(label.get("name") or "").strip().casefold() == wanted:
+            return int(label["id"]), str(label["name"])
+    raise ToolError(
+        f"No Timely label named {name!r}. Create it once in Timely, then retry."
+    )
+
+
+async def _resolve_project(acc: int, project: int | str) -> tuple[int, str | None]:
+    if isinstance(project, int) or str(project).strip().isdigit():
+        return int(project), None  # trusted as-is; Timely rejects a bad id
+    raw = (await session.get(f"/1.1/{acc}/projects", params={"per_page": 500})).json()
+    wanted = str(project).strip().casefold()
+    hits = [p for p in raw if str(p.get("name") or "").strip().casefold() == wanted]
+    if not hits:
+        active = sorted(str(p.get("name") or "") for p in raw if p.get("active", True))
+        raise ToolError(
+            f"No Timely project named {project!r}. Active projects: "
+            + ", ".join(active[:20])
+        )
+    if len(hits) > 1:
+        ids = ", ".join(str(p["id"]) for p in hits)
+        raise ToolError(
+            f"{len(hits)} Timely projects are named {project!r} (ids: {ids}); "
+            "pass the id instead."
+        )
+    return int(hits[0]["id"]), str(hits[0].get("name") or "")
+
+
+async def _entry_with_external_id(
+    acc: int, me: int, day: str, external_id: str
+) -> int | None:
+    raw = (
+        await session.get(
+            f"/1.1/{acc}/users/{me}/events",
+            params={"since": day, "upto": day, "per_page": 250},
+        )
+    ).json()
+    for entry in raw:
+        if str(entry.get("external_id") or "") == external_id:
+            return int(entry["id"])
+    return None
 
 
 # -- tools --------------------------------------------------------------------
@@ -291,6 +374,118 @@ async def work_log(since: str, upto: str) -> WorkLogResult:
     summary = f"{len(entries)} entries, {total:.1f}h between {since} and {upto}."
     return WorkLogResult(
         summary=summary, since=since, upto=upto, total_hours=total, entries=entries
+    )
+
+
+@mcp.tool(
+    tags={"time-tracking"},
+    annotations=ToolAnnotations(
+        title="Create time entry",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,  # repeat-safe when external_id is supplied
+        open_world_hint=True,
+    ),
+)
+async def create_entry(
+    project: int | str,
+    day: str,
+    minutes: int,
+    note: str,
+    label: str | None = None,
+    external_id: str | None = None,
+    billable: bool | None = None,
+) -> CreateEntryResult:
+    """[timely] Log time I already spent. Creates one entry for the authorized
+    user against `project` (a numeric id, or an exact project name) on `day`
+    (YYYY-MM-DD), lasting `minutes`, with a `note` saying what the time went on.
+
+    Pass `external_id` to make the call safe to repeat: if an entry on that day
+    already carries it, nothing is created and `created` comes back false.
+    `label` is the name of a label that already exists in Timely. `billable`
+    defaults to the project's own setting.
+    """
+    # Validation is deliberate, not defensive padding: these entries price at a
+    # real hourly rate on a client retainer, so a caller bug must not become an
+    # invoice line.
+    day = day.strip()
+    if not _DAY_RE.match(day):
+        raise ToolError(f"day must be YYYY-MM-DD, got {day!r}.")
+    if minutes <= 0:
+        raise ToolError(f"minutes must be positive, got {minutes}.")
+    if minutes > _MAX_MINUTES:
+        raise ToolError(
+            f"minutes must be at most {_MAX_MINUTES} (24h) for one day, got "
+            f"{minutes} — refusing to log an implausible duration."
+        )
+    note = note.strip()
+    if not note:
+        raise ToolError("note is required: a logged hour must say what it was for.")
+
+    acc = await session.account_id()
+    me = await session.user_id()
+    project_id, project_name = await _resolve_project(acc, project)
+
+    label_id: int | None = None
+    label_name: str | None = None
+    if label:
+        label_id, label_name = await _resolve_label(acc, label)
+
+    total_hours = minutes / 60
+    formatted = _fmt_hours(total_hours)
+
+    if external_id:
+        already = await _entry_with_external_id(acc, me, day, external_id)
+        if already is not None:
+            return CreateEntryResult(
+                summary=(
+                    f"Nothing created: entry {already} on {day} already carries "
+                    f"external_id {external_id!r}."
+                ),
+                created=False,
+                entry_id=already,
+                project_id=project_id,
+                project=project_name,
+                day=day,
+                hours=total_hours,
+                hours_formatted=formatted,
+                label=label_name,
+                note=note,
+                external_id=external_id,
+            )
+
+    hours, mins = divmod(int(minutes), 60)
+    event: dict[str, Any] = {
+        "project_id": project_id,
+        "user_id": me,
+        "day": day,
+        "hours": hours,
+        "minutes": mins,
+        "note": note,
+    }
+    if label_id is not None:
+        event["label_ids"] = [label_id]
+    if external_id:
+        event["external_id"] = external_id
+    if billable is not None:
+        event["billable"] = billable
+
+    raw = (await session.post(f"/1.1/{acc}/hours", json_body={"event": event})).json()
+    where = project_name or (raw.get("project") or {}).get("name")
+    tag = f", label {label_name}" if label_name else ""
+    return CreateEntryResult(
+        summary=f"Logged {formatted} to {where or f'project {project_id}'} "
+        f"on {day}{tag}.",
+        created=True,
+        entry_id=int(raw["id"]) if raw.get("id") else None,
+        project_id=project_id,
+        project=where,
+        day=day,
+        hours=total_hours,
+        hours_formatted=formatted,
+        label=label_name,
+        note=note,
+        external_id=external_id,
     )
 
 

@@ -114,6 +114,32 @@ async def test_resolves_project_and_label_by_name_and_posts_event(
     assert data["hours_formatted"] == "01:35"
 
 
+@pytest.mark.parametrize("flag", [True, False])
+async def test_billable_is_forwarded_verbatim_when_set(
+    client, scoped, monkeypatch, flag
+):
+    """Explicit billable must reach Timely unchanged.
+
+    The SessionEnd hook sends billable=True on purpose so agent hours count
+    against the StoryKeep retainer rather than inheriting whatever the month's
+    project happens to be set to.
+    """
+    monkeypatch.setattr(srv.session, "get", _route_get(projects=RETAINER))
+    post = AsyncMock(return_value=_Resp(CREATED))
+    monkeypatch.setattr(srv.session, "post", post)
+    await client.call_tool(
+        "create_entry",
+        {
+            "project": 5683637,
+            "day": "2026-10-07",
+            "minutes": 60,
+            "note": "billable flag",
+            "billable": flag,
+        },
+    )
+    assert post.call_args.kwargs["json_body"]["event"]["billable"] is flag
+
+
 async def test_numeric_project_skips_the_lookup(client, scoped, monkeypatch):
     async def _get(path, params=None):
         if "/labels" in path:

@@ -4,7 +4,8 @@ references:
   - cdit
 
 context: |
-  FastMCP 4 server for Timely time tracking. Question-shaped read-only
-  tools (projects_overview, time_spent, work_log), OAuth2 with rotating
-  refresh tokens persisted to a token file. Fleet conventions from the
-  cdit store apply. Public repo — keep CDIT deployment specifics out.
+  FastMCP 4 server for Timely time tracking. Question-shaped read tools
+  (projects_overview, time_spent, work_log) plus one narrow write tool
+  (create_entry, the only write path), OAuth2 with rotating refresh
+  tokens persisted to a token file. Fleet conventions from the cdit
+  store apply. Public repo — keep CDIT deployment specifics out.

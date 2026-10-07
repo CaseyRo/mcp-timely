@@ -16,10 +16,10 @@ permissions:
 # Only patch-level bumps (or pure-patch groups) auto-merge. Anything with a
 # minor or major in the group is left for review.
 #
-# Tests run inline in this workflow instead of relying on branch protection
-# required status checks, because main isn't currently protected. If/when
-# branch protection is enabled, this workflow still works — it just adds
-# belt-and-braces coverage.
+# Tests run inline here as belt-and-braces. The comment used to say main was
+# unprotected; it is protected now and requires the `test` check from ci.yml,
+# so a failing bump is already blocked without this job. Kept anyway: it runs
+# against the PR head before the merge call, and only on patch bumps.
 
 jobs:
   auto-merge:
@@ -32,17 +32,17 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
 
       - name: Install and test with bumped deps

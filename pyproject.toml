@@ -29,6 +29,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_timely"]
 
+[tool.ruff.lint]
+# Pinned to ruff 0.15's default selection. Declared explicitly because ruff
+# changes its defaults between minors -- 0.16 additionally turns on I, UP, C4
+# and RUF, which made a routine dependabot lock bump fail CI on seven
+# pre-existing findings. Adopting a new lint family is a decision, not
+# something a Monday-morning dependency PR should make for us.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

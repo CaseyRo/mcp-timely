@@ -94,6 +94,7 @@ class WorkLogEntry(BaseModel):
     hours_formatted: str
     note: str | None = None
     project: str | None = None
+    labels: list[str] = []
     billable: bool = False
     billed: bool = False
     timer_running: bool = False
@@ -344,8 +345,9 @@ async def time_spent(
     annotations=ToolAnnotations(title="Work log", **_READ_ONLY),
 )
 async def work_log(since: str, upto: str) -> WorkLogResult:
-    """[timely] What did I actually do? Individual entries with notes for a
-    date range (YYYY-MM-DD) — standup, diary, and invoicing raw material."""
+    """[timely] What did I actually do? Individual entries with notes and
+    labels for a date range (YYYY-MM-DD) — standup, diary, and invoicing raw
+    material."""
     acc = await session.account_id()
     me = await session.user_id()
     # ponytail: no pagination — 250 entries covers weeks; page when a range overflows
@@ -355,6 +357,13 @@ async def work_log(since: str, upto: str) -> WorkLogResult:
             params={"since": since, "upto": upto, "per_page": 250},
         )
     ).json()
+    # Events carry label ids only; one lookup names them, skipped when unlabelled.
+    names: dict[int, str] = {}
+    if any(e.get("label_ids") for e in raw):
+        labels = (await session.get(f"/1.1/{acc}/labels")).json()
+        names = {
+            int(lb["id"]): str(lb.get("name") or "") for lb in _flatten_labels(labels)
+        }
     entries = [
         WorkLogEntry(
             day=str(e.get("day") or ""),
@@ -362,6 +371,7 @@ async def work_log(since: str, upto: str) -> WorkLogResult:
             hours_formatted=_formatted(e.get("duration")),
             note=(e.get("note") or None),
             project=(e.get("project") or {}).get("name"),
+            labels=[names.get(int(i), str(i)) for i in (e.get("label_ids") or [])],
             billable=bool(e.get("billable", False)),
             billed=bool(e.get("billed", False)),
             timer_running=str(e.get("timer_state") or "")

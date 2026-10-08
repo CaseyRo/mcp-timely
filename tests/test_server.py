@@ -247,6 +247,22 @@ async def test_work_log_sorts_by_day_and_maps_entries(client, scoped, monkeypatc
     assert data["total_hours"] == 2.25
 
 
+async def test_work_log_names_labels_with_one_lookup(client, scoped, monkeypatch):
+    events = [{**EVENTS[0], "label_ids": [7, 99]}, EVENTS[1]]
+    labels = [{"id": 5, "name": "Dev", "children": [{"id": 7, "name": "Claude"}]}]
+    get = AsyncMock(side_effect=[_Resp(events), _Resp(labels)])
+    monkeypatch.setattr(srv.session, "get", get)
+    data = _payload(
+        await client.call_tool(
+            "work_log", {"since": "2026-07-13", "upto": "2026-07-19"}
+        )
+    )
+    assert get.call_args_list[1].args[0] == "/1.1/1141447/labels"
+    by_day = {e["day"]: e for e in data["entries"]}
+    assert by_day["2026-07-16"]["labels"] == ["Claude", "99"]  # unknown id kept
+    assert by_day["2026-07-15"]["labels"] == []
+
+
 async def test_tool_call_writes_one_usage_line(capsys, client, scoped, monkeypatch):
     monkeypatch.setattr(srv.session, "get", AsyncMock(return_value=_Resp(PROJECTS)))
     await client.call_tool("projects_overview", {})

@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
 
       - name: Install and test with bumped deps

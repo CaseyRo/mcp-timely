@@ -37,6 +37,10 @@ packages = ["src/mcp_timely"]
 # something a Monday-morning dependency PR should make for us.
 select = ["E4", "E7", "E9", "F"]
 
+[tool.ruff.format]
+# Vendored verbatim from CDiT-infrastructure; re-copied, never reformatted here.
+exclude = ["src/mcp_timely/usage.py"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -119,24 +119,27 @@ async def client():
         yield c
 
 
-async def test_tool_surface_is_three_reads_and_one_write(client):
+async def test_tool_surface_is_three_reads_and_three_writes(client):
     """The spec's guarantee.
 
     Was "exactly three read-only tools" until CDI-1956 deliberately opened a
     single write path (`create_entry`) so agent sessions can log their own
-    time. The guarantee is now narrower but still a guarantee: the three reads
-    stay read-only, and `create_entry` is the ONLY tool that may write. A new
-    non-read-only tool fails here on purpose.
+    time; CDI-1974 deliberately added `update_entry` and `delete_entry` so
+    agents can correct entries. The three reads stay read-only, and these
+    three are the ONLY tools that may write. A new non-read-only tool fails
+    here on purpose.
     """
     tools = await client.list_tools()
     assert sorted(t.name for t in tools) == [
         "create_entry",
+        "delete_entry",
         "projects_overview",
         "time_spent",
+        "update_entry",
         "work_log",
     ]
     writers = sorted(t.name for t in tools if t.annotations.read_only_hint is not True)
-    assert writers == ["create_entry"]
+    assert writers == ["create_entry", "delete_entry", "update_entry"]
 
 
 async def test_projects_overview_filters_inactive_and_maps_fields(
@@ -241,6 +244,7 @@ async def test_work_log_sorts_by_day_and_maps_entries(client, scoped, monkeypatc
     assert get.call_args.args[0] == "/1.1/1141447/users/42/events"
     assert [e["day"] for e in data["entries"]] == ["2026-07-15", "2026-07-16"]
     first = data["entries"][0]
+    assert [e["id"] for e in data["entries"]] == [10, 11]  # addressable (CDI-1974)
     assert first["project"] == "Site relaunch"
     assert first["timer_running"] is True
     assert "note" not in first or first["note"] is None  # empty note normalised

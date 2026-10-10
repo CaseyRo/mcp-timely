@@ -1,7 +1,8 @@
-"""MCP server exposing question-shaped read tools for Timely.
+"""MCP server exposing question-shaped tools for Timely.
 
-Three tools, each ≤2 upstream calls: ``projects_overview``, ``time_spent``,
-``work_log``. Read-only and scoped to the authorized user by design.
+Three reads, each ≤2 upstream calls: ``projects_overview``, ``time_spent``,
+``work_log``. Three guarded writes: ``create_entry``, ``update_entry``,
+``delete_entry``. Everything is scoped to the authorized user by design.
 """
 
 from __future__ import annotations
@@ -89,6 +90,7 @@ class TimeSpentResult(BaseModel):
 
 
 class WorkLogEntry(BaseModel):
+    id: int | None = None  # Timely event id; what update_entry/delete_entry take
     day: str
     hours: float
     hours_formatted: str
@@ -106,6 +108,21 @@ class WorkLogResult(BaseModel):
     upto: str
     total_hours: float
     entries: list[WorkLogEntry]
+
+
+class EntrySnapshot(WorkLogEntry):
+    project_id: int | None = None  # so a move can be reversed by hand
+
+
+class UpdateEntryResult(BaseModel):
+    summary: str
+    before: EntrySnapshot
+    after: EntrySnapshot
+
+
+class DeleteEntryResult(BaseModel):
+    summary: str
+    before: EntrySnapshot
 
 
 class CreateEntryResult(BaseModel):
@@ -169,6 +186,81 @@ def _slice(entry: dict[str, Any]) -> GroupSlice:
 
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_MINUTES = 24 * 60
+
+
+def _check_day(day: str) -> str:
+    day = day.strip()
+    if not _DAY_RE.match(day):
+        raise ToolError(f"day must be YYYY-MM-DD, got {day!r}.")
+    return day
+
+
+def _check_minutes(minutes: int) -> None:
+    if minutes <= 0:
+        raise ToolError(f"minutes must be positive, got {minutes}.")
+    if minutes > _MAX_MINUTES:
+        raise ToolError(
+            f"minutes must be at most {_MAX_MINUTES} (24h) for one day, got "
+            f"{minutes} — refusing to log an implausible duration."
+        )
+
+
+def _check_note(note: str) -> str:
+    note = note.strip()
+    if not note:
+        raise ToolError("note is required: a logged hour must say what it was for.")
+    return note
+
+
+def _timer_running(e: dict[str, Any]) -> bool:
+    return str(e.get("timer_state") or "") in {"start", "started", "running"}
+
+
+def _snapshot(e: dict[str, Any], names: dict[int, str]) -> EntrySnapshot:
+    return EntrySnapshot(
+        id=int(e["id"]) if e.get("id") is not None else None,
+        day=str(e.get("day") or ""),
+        hours=_hours(e.get("duration")),
+        hours_formatted=_formatted(e.get("duration")),
+        note=(e.get("note") or None),
+        project=(e.get("project") or {}).get("name"),
+        project_id=(e.get("project") or {}).get("id") or e.get("project_id"),
+        labels=[names.get(int(i), str(i)) for i in (e.get("label_ids") or [])],
+        billable=bool(e.get("billable", False)),
+        billed=bool(e.get("billed", False)),
+        timer_running=_timer_running(e),
+    )
+
+
+async def _label_names(acc: int, events: list[dict[str, Any]]) -> dict[int, str]:
+    """Events carry label ids only; one lookup names them, skipped when unlabelled."""
+    if not any(e.get("label_ids") for e in events):
+        return {}
+    labels = (await session.get(f"/1.1/{acc}/labels")).json()
+    return {int(lb["id"]): str(lb.get("name") or "") for lb in _flatten_labels(labels)}
+
+
+async def _editable_entry(acc: int, me: int, entry_id: int) -> dict[str, Any]:
+    """Fetch an entry and refuse anything a correction must not touch.
+
+    Billed/locked/invoiced entries are already on a client invoice; another
+    user's entry is not ours to change; a running timer would overwrite the
+    edit when it stops.
+    """
+    e = (await session.get(f"/1.1/{acc}/hours/{entry_id}")).json()
+    owner = (e.get("user") or {}).get("id") or e.get("user_id")
+    if owner is None or int(owner) != me:
+        raise ToolError(f"Entry {entry_id} belongs to another user; refusing.")
+    if e.get("billed") or e.get("invoice_id"):
+        raise ToolError(f"Entry {entry_id} is billed; refusing to change it.")
+    if e.get("locked"):
+        why = f" ({e['locked_reason']})" if e.get("locked_reason") else ""
+        raise ToolError(f"Entry {entry_id} is locked{why}; refusing to change it.")
+    if _timer_running(e):
+        raise ToolError(
+            f"Entry {entry_id} has a running timer; stop it in Timely first."
+        )
+    return e
 
 
 def _flatten_labels(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -347,7 +439,7 @@ async def time_spent(
 async def work_log(since: str, upto: str) -> WorkLogResult:
     """[timely] What did I actually do? Individual entries with notes and
     labels for a date range (YYYY-MM-DD) — standup, diary, and invoicing raw
-    material."""
+    material. Each entry's `id` is what update_entry and delete_entry take."""
     acc = await session.account_id()
     me = await session.user_id()
     # ponytail: no pagination — 250 entries covers weeks; page when a range overflows
@@ -357,26 +449,9 @@ async def work_log(since: str, upto: str) -> WorkLogResult:
             params={"since": since, "upto": upto, "per_page": 250},
         )
     ).json()
-    # Events carry label ids only; one lookup names them, skipped when unlabelled.
-    names: dict[int, str] = {}
-    if any(e.get("label_ids") for e in raw):
-        labels = (await session.get(f"/1.1/{acc}/labels")).json()
-        names = {
-            int(lb["id"]): str(lb.get("name") or "") for lb in _flatten_labels(labels)
-        }
+    names = await _label_names(acc, raw)
     entries = [
-        WorkLogEntry(
-            day=str(e.get("day") or ""),
-            hours=_hours(e.get("duration")),
-            hours_formatted=_formatted(e.get("duration")),
-            note=(e.get("note") or None),
-            project=(e.get("project") or {}).get("name"),
-            labels=[names.get(int(i), str(i)) for i in (e.get("label_ids") or [])],
-            billable=bool(e.get("billable", False)),
-            billed=bool(e.get("billed", False)),
-            timer_running=str(e.get("timer_state") or "")
-            in {"start", "started", "running"},
-        )
+        WorkLogEntry(**_snapshot(e, names).model_dump(exclude={"project_id"}))
         for e in raw
     ]
     entries.sort(key=lambda e: e.day)
@@ -418,19 +493,9 @@ async def create_entry(
     # Validation is deliberate, not defensive padding: these entries price at a
     # real hourly rate on a client retainer, so a caller bug must not become an
     # invoice line.
-    day = day.strip()
-    if not _DAY_RE.match(day):
-        raise ToolError(f"day must be YYYY-MM-DD, got {day!r}.")
-    if minutes <= 0:
-        raise ToolError(f"minutes must be positive, got {minutes}.")
-    if minutes > _MAX_MINUTES:
-        raise ToolError(
-            f"minutes must be at most {_MAX_MINUTES} (24h) for one day, got "
-            f"{minutes} — refusing to log an implausible duration."
-        )
-    note = note.strip()
-    if not note:
-        raise ToolError("note is required: a logged hour must say what it was for.")
+    day = _check_day(day)
+    _check_minutes(minutes)
+    note = _check_note(note)
 
     acc = await session.account_id()
     me = await session.user_id()
@@ -496,6 +561,115 @@ async def create_entry(
         label=label_name,
         note=note,
         external_id=external_id,
+    )
+
+
+@mcp.tool(
+    tags={"time-tracking"},
+    annotations=ToolAnnotations(
+        title="Correct time entry",
+        read_only_hint=False,
+        destructive_hint=True,  # overwrites fields of an existing entry
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
+)
+async def update_entry(
+    id: int,
+    project: int | str | None = None,
+    minutes: int | None = None,
+    note: str | None = None,
+    day: str | None = None,
+    labels: list[str] | None = None,
+    billable: bool | None = None,
+) -> UpdateEntryResult:
+    """[timely] Fix one of my time entries: move it to another project, or
+    change its minutes, note, day, labels or billable flag. `id` comes from
+    work_log. Only the fields you pass change; `labels` replaces the entry's
+    labels (names that already exist in Timely; [] clears them), and
+    `project` is a numeric id or an exact project name.
+
+    Refuses entries that are billed or locked, belong to another user, or have
+    a running timer, and never creates a project or label. Returns `before`
+    and `after` so a move can be reversed by hand.
+    """
+    # Validate before any call: a caller bug must not become an invoice line.
+    if day is not None:
+        day = _check_day(day)
+    if minutes is not None:
+        _check_minutes(minutes)
+    if note is not None:
+        note = _check_note(note)
+    if all(v is None for v in (project, minutes, note, day, labels, billable)):
+        raise ToolError("Nothing to change: pass at least one field to update.")
+
+    acc = await session.account_id()
+    me = await session.user_id()
+    before_raw = await _editable_entry(acc, me, id)
+
+    event: dict[str, Any] = {}
+    if project is not None:
+        event["project_id"], _ = await _resolve_project(acc, project)
+    if labels is not None:
+        event["label_ids"] = [(await _resolve_label(acc, n))[0] for n in labels]
+    if minutes is not None:
+        event["hours"], event["minutes"] = divmod(int(minutes), 60)
+    if note is not None:
+        event["note"] = note
+    if day is not None:
+        event["day"] = day
+    if billable is not None:
+        event["billable"] = billable
+
+    after_raw = (
+        await session.request(
+            "PUT", f"/1.1/{acc}/hours/{id}", json_body={"event": event}
+        )
+    ).json()
+    names = await _label_names(acc, [before_raw, after_raw])
+    before, after = _snapshot(before_raw, names), _snapshot(after_raw, names)
+    changed = ", ".join(sorted(event)).replace("hours, minutes", "duration")
+    return UpdateEntryResult(
+        summary=f"Updated entry {id} ({changed}): {before.project} "
+        f"{before.day} {before.hours_formatted} -> {after.project} "
+        f"{after.day} {after.hours_formatted}.",
+        before=before,
+        after=after,
+    )
+
+
+@mcp.tool(
+    tags={"time-tracking"},
+    annotations=ToolAnnotations(
+        title="Delete time entry",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
+)
+async def delete_entry(id: int, confirm: bool = False) -> DeleteEntryResult:
+    """[timely] Delete one of my time entries, e.g. a duplicate. `id` comes
+    from work_log. Nothing is deleted unless `confirm` is true.
+
+    Refuses entries that are billed or locked, belong to another user, or have
+    a running timer. Returns the deleted entry as `before` so it can be
+    re-created by hand.
+    """
+    if confirm is not True:
+        raise ToolError(
+            f"Not deleted: pass confirm=true to delete entry {id}. "
+            "Check it in work_log first."
+        )
+    acc = await session.account_id()
+    me = await session.user_id()
+    before_raw = await _editable_entry(acc, me, id)
+    await session.request("DELETE", f"/1.1/{acc}/hours/{id}")
+    before = _snapshot(before_raw, await _label_names(acc, [before_raw]))
+    return DeleteEntryResult(
+        summary=f"Deleted entry {id}: {before.hours_formatted} on "
+        f"{before.project or 'no project'} on {before.day}.",
+        before=before,
     )
 
 

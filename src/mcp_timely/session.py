@@ -134,6 +134,7 @@ class TimelySession:
         if resp.status_code >= 400:
             raise ToolError(
                 f"Timely API error on {method} {path}: HTTP {resp.status_code}"
+                + _error_detail(resp)
             )
         return resp
 
@@ -181,3 +182,22 @@ class TimelySession:
             me = (await self.get(f"/1.1/{acc}/users/current")).json()
             self._user_id = int(me["id"])
         return self._user_id
+
+
+def _error_detail(resp: httpx.Response) -> str:
+    """Timely's own reason for a rejected API call (e.g. a 422), capped.
+
+    The token endpoint never routes through here, so the body cannot carry
+    token material.
+    """
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            body = (
+                body.get("errors") or body.get("error") or body.get("message") or body
+            )
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+    except ValueError:
+        text = resp.text
+    text = " ".join(text.split())[:300]
+    return f" - {text}" if text else ""

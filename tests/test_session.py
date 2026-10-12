@@ -95,3 +95,20 @@ async def test_exchange_code_writes_token_file(tmp_path):
     session = make_session(tmp_path, handler, tokens=None)
     await session.exchange_code("oob-code")
     assert json.loads((tmp_path / "tokens.json").read_text()) == NEW
+
+
+async def test_4xx_carries_timelys_reason(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422, json={"errors": {"label_ids": ["are not allowed on this project"]}}
+        )
+
+    session = make_session(tmp_path, handler)
+    with pytest.raises(ToolError, match="HTTP 422 - .*not allowed on this project"):
+        await session.get("/1.1/accounts")
+
+
+async def test_4xx_without_body_stays_plain(tmp_path):
+    session = make_session(tmp_path, lambda req: httpx.Response(404))
+    with pytest.raises(ToolError, match=r"HTTP 404$"):
+        await session.get("/1.1/accounts")

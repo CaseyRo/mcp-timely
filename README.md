@@ -3,18 +3,25 @@
 An MCP server for [Timely](https://timelyapp.com) time tracking, built for
 asking questions rather than wrapping endpoints. It is for Timely users who want
 Claude, or any other MCP client, to answer "where did my time go?" reliably.
-Each of its three read-only tools is answered in a single upstream call with
-Timely doing the aggregation server-side, so the model never pages through raw
-entries to sum hours (and never gets the sum wrong).
+Its three questions are each answered in a single upstream call with Timely
+doing the aggregation server-side, so the model never pages through raw
+entries to sum hours (and never gets the sum wrong). Three write tools log time
+and correct entries that were logged wrong.
 
 | Tool | The question it answers |
 |------|------------------------|
 | `projects_overview` | *What's on my plate?* Projects with client, logged hours, budget burn, unbilled amounts |
 | `time_spent` | *Where did my time go?* Date-range rollups grouped by project, client, label or day, with billable split |
-| `work_log` | *What did I actually do?* Individual entries with notes for a range; standup, diary or invoicing material |
+| `work_log` | *What did I actually do?* Individual entries (with their `id`) and notes for a range; standup, diary or invoicing material |
+| `create_entry` | *Log time I already spent.* One entry on a project and day; `external_id` makes a repeat call a no-op |
+| `update_entry` | *Fix an entry.* Move it to another project, or change its minutes, note, day, labels or billable flag; returns it before and after |
+| `delete_entry` | *Remove an entry*, e.g. a duplicate. Does nothing unless `confirm` is true |
 
-Scope is deliberate: **read-only**, and always scoped to the authorized user.
-There are no write tools and no user or team parameters.
+Everything is scoped to the authorized user; there are no user or team
+parameters. `update_entry` and `delete_entry` refuse entries that are billed,
+invoiced, locked, running a timer, or belong to someone else. When Timely
+rejects a change, the error carries Timely's reason (for example labels the
+target project does not allow).
 
 ## Requirements
 

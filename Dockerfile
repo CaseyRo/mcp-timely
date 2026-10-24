@@ -8,7 +8,7 @@ COPY src/ ./src/
 # ca-certificates: httpx2 uses the OS trust store
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir uv && \
+    pip install --no-cache-dir uv==0.13.5 && \
     uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt && \
     pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && \
     pip install --no-cache-dir --no-deps . && \

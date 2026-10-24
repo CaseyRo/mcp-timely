@@ -1,8 +1,8 @@
 """MCP server exposing question-shaped tools for Timely.
 
 Three reads, each ≤2 upstream calls: ``projects_overview``, ``time_spent``,
-``work_log``. Three guarded writes: ``create_entry``, ``update_entry``,
-``delete_entry``. Everything is scoped to the authorized user by design.
+``work_log``. Four guarded writes: ``create_entry``, ``update_entry``,
+``delete_entry``, ``mark_billed``. Everything is scoped to the authorized user by design.
 """
 
 from __future__ import annotations
@@ -123,6 +123,20 @@ class UpdateEntryResult(BaseModel):
 class DeleteEntryResult(BaseModel):
     summary: str
     before: EntrySnapshot
+
+
+class MarkBilledResult(BaseModel):
+    summary: str
+    marked: bool  # False on a dry run (confirm not true)
+    project_id: int
+    project: str | None = None
+    since: str
+    upto: str
+    count: int
+    hours: float
+    hours_formatted: str
+    entry_ids: list[int]
+    failed_ids: list[int] = []  # PUT went through but Timely did not report billed
 
 
 class CreateEntryResult(BaseModel):
@@ -670,6 +684,102 @@ async def delete_entry(id: int, confirm: bool = False) -> DeleteEntryResult:
         summary=f"Deleted entry {id}: {before.hours_formatted} on "
         f"{before.project or 'no project'} on {before.day}.",
         before=before,
+    )
+
+
+@mcp.tool(
+    tags={"time-tracking"},
+    annotations=ToolAnnotations(
+        title="Mark entries billed",
+        read_only_hint=False,
+        destructive_hint=True,  # billed entries lock; no unbill tool
+        idempotent_hint=True,  # already billed entries are skipped
+        open_world_hint=True,
+    ),
+)
+async def mark_billed(
+    project: int | str, since: str, upto: str, confirm: bool = False
+) -> MarkBilledResult:
+    """[timely] After an invoice goes out: mark my billable, not-yet-billed
+    entries on `project` (a numeric id, or an exact project name) between
+    `since` and `upto` (YYYY-MM-DD, inclusive) as billed.
+
+    Without `confirm: true` this is a dry run: it lists what would be marked
+    and writes nothing. Non-billable entries, running timers and other users'
+    entries are never touched; entries already billed are skipped. Billed
+    entries lock, and update_entry/delete_entry refuse them afterwards.
+    """
+    since, upto = _check_day(since), _check_day(upto)
+    if since > upto:
+        raise ToolError(f"since ({since}) is after upto ({upto}).")
+    acc = await session.account_id()
+    me = await session.user_id()
+    project_id, project_name = await _resolve_project(acc, project)
+    # ponytail: no pagination; per_page 5000 is Timely's max, one invoice is far below it
+    raw = (
+        await session.get(
+            f"/1.1/{acc}/hours",
+            params={
+                "since": since,
+                "upto": upto,
+                "project_id": project_id,
+                "user_id": me,
+                "per_page": 5000,
+            },
+        )
+    ).json()
+    todo = [
+        e
+        for e in raw
+        if int((e.get("user") or {}).get("id") or e.get("user_id") or -1) == me
+        and int((e.get("project") or {}).get("id") or e.get("project_id") or -1)
+        == project_id
+        and e.get("billable")
+        and not e.get("billed")
+        and not e.get("invoice_id")
+        and not _timer_running(e)
+    ]
+    project_name = project_name or (
+        (todo[0].get("project") or {}).get("name") if todo else None
+    )
+    total = sum(_hours(e.get("duration")) for e in todo)
+    ids = [int(e["id"]) for e in todo]
+    where = f"{project_name or f'project {project_id}'} {since}..{upto}"
+
+    failed: list[int] = []
+    if confirm is True:
+        # ponytail: one PUT per entry; switch to POST /bulk/hours past ~100 entries
+        for entry_id in ids:
+            after = (
+                await session.request(
+                    "PUT",
+                    f"/1.1/{acc}/hours/{entry_id}",
+                    json_body={"event": {"billed": True}},
+                )
+            ).json()
+            if not after.get("billed"):
+                failed.append(entry_id)
+        done = len(ids) - len(failed)
+        summary = f"Marked {done} entries ({_fmt_hours(total)}) billed on {where}."
+        if failed:
+            summary += f" {len(failed)} did not come back billed: {failed}."
+    else:
+        summary = (
+            f"Dry run: {len(ids)} entries ({_fmt_hours(total)}) on {where} would be "
+            "marked billed. Pass confirm=true to mark them."
+        )
+    return MarkBilledResult(
+        summary=summary,
+        marked=confirm is True,
+        project_id=project_id,
+        project=project_name,
+        since=since,
+        upto=upto,
+        count=len(ids),
+        hours=total,
+        hours_formatted=_fmt_hours(total),
+        entry_ids=ids,
+        failed_ids=failed,
     )
 
 

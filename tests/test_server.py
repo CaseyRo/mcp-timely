@@ -119,27 +119,29 @@ async def client():
         yield c
 
 
-async def test_tool_surface_is_three_reads_and_three_writes(client):
+async def test_tool_surface_is_three_reads_and_four_writes(client):
     """The spec's guarantee.
 
     Was "exactly three read-only tools" until CDI-1956 deliberately opened a
     single write path (`create_entry`) so agent sessions can log their own
     time; CDI-1974 deliberately added `update_entry` and `delete_entry` so
-    agents can correct entries. The three reads stay read-only, and these
-    three are the ONLY tools that may write. A new non-read-only tool fails
+    agents can correct entries; CDI-2075 deliberately added `mark_billed` so
+    invoiced hours can be marked billed. The three reads stay read-only, and
+    these four are the ONLY tools that may write. A new non-read-only tool fails
     here on purpose.
     """
     tools = await client.list_tools()
     assert sorted(t.name for t in tools) == [
         "create_entry",
         "delete_entry",
+        "mark_billed",
         "projects_overview",
         "time_spent",
         "update_entry",
         "work_log",
     ]
     writers = sorted(t.name for t in tools if t.annotations.read_only_hint is not True)
-    assert writers == ["create_entry", "delete_entry", "update_entry"]
+    assert writers == ["create_entry", "delete_entry", "mark_billed", "update_entry"]
 
 
 async def test_projects_overview_filters_inactive_and_maps_fields(

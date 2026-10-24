@@ -5,8 +5,8 @@ asking questions rather than wrapping endpoints. It is for Timely users who want
 Claude, or any other MCP client, to answer "where did my time go?" reliably.
 Its three questions are each answered in a single upstream call with Timely
 doing the aggregation server-side, so the model never pages through raw
-entries to sum hours (and never gets the sum wrong). Three write tools log time
-and correct entries that were logged wrong.
+entries to sum hours (and never gets the sum wrong). Four write tools log time,
+correct entries that were logged wrong, and mark invoiced hours billed.
 
 | Tool | The question it answers |
 |------|------------------------|
@@ -16,6 +16,7 @@ and correct entries that were logged wrong.
 | `create_entry` | *Log time I already spent.* One entry on a project and day; `external_id` makes a repeat call a no-op |
 | `update_entry` | *Fix an entry.* Move it to another project, or change its minutes, note, day, labels or billable flag; returns it before and after |
 | `delete_entry` | *Remove an entry*, e.g. a duplicate. Does nothing unless `confirm` is true |
+| `mark_billed` | *I've invoiced this.* Marks my billable, unbilled entries on a project in a date range as billed; a dry run unless `confirm` is true |
 
 Everything is scoped to the authorized user; there are no user or team
 parameters. `update_entry` and `delete_entry` refuse entries that are billed,

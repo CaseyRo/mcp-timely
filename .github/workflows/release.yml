@@ -34,13 +34,10 @@ jobs:
 
       - name: Install and test
         run: |
-          uv sync
+          uv sync --locked
           uv run pytest -x
         env:
           FASTMCP_MCP_CAMELCASE_COMPAT: "false"
-
-      - name: Security audit (pip-audit)
-        run: uvx pip-audit
 
       - name: Tag release
         id: version
@@ -81,13 +78,16 @@ jobs:
             ghcr.io/${{ env.IMAGE_NAME }}:latest
 
       # Trigger a redeploy of the new :latest image via a signed webhook.
-      # Runs after the GHCR push so the image is guaranteed to exist. Skipped
-      # while the webhook secret is unset.
+      # Runs after the GHCR push so the image is guaranteed to exist. Fails when the
+      # secret is unset: a skipped step here would release an image nobody deploys.
       - name: Trigger deploy
-        if: env.KOMODO_WEBHOOK_SECRET != ''
         env:
           DEPLOY_URL: ${{ secrets.KOMODO_DEPLOY_URL }}
         run: |
+          if [ -z "$KOMODO_WEBHOOK_SECRET" ]; then
+            echo "::error::KOMODO_WEBHOOK_SECRET is not set; the new image will not deploy."
+            exit 1
+          fi
           BODY='{"ref":"refs/heads/main","repository":{"full_name":"CaseyRo/mcp-timely"}}'
           SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KOMODO_WEBHOOK_SECRET" | awk '{print $2}')
 

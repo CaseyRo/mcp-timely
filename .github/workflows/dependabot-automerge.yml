@@ -5,22 +5,11 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
-# Runs on pull_request_target so it has write access to the repo, but checks
-# out the PR head so tests run against the actual dependency bump. Safe for
-# Dependabot PRs because Dependabot only touches lock/manifest files, not
-# workflow or test code.
-#
-# Only patch-level bumps (or pure-patch groups) auto-merge. Anything with a
-# minor or major in the group is left for review.
-#
-# Tests run inline here as belt-and-braces. The comment used to say main was
-# unprotected; it is protected now and requires the `test` check from ci.yml,
-# so a failing bump is already blocked without this job. Kept anyway: it runs
-# against the PR head before the merge call, and only on patch bumps.
-
+# Never checks out PR code under pull_request_target. Patch bumps are queued for
+# auto-merge; GitHub merges them only after the required `test` check is green.
 jobs:
   auto-merge:
     if: github.actor == 'dependabot[bot]'
@@ -32,28 +21,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/checkout@v7
+      - name: Queue squash auto-merge (patch only)
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - uses: actions/setup-python@v7
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        with:
-          python-version: '3.12'
-
-      - uses: astral-sh/setup-uv@v10.2.0
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-
-      - name: Install and test with bumped deps
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        run: |
-          uv sync
-          uv run pytest -x
-
-      - name: Squash-merge the PR
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        run: gh pr merge --squash --delete-branch "$PR_URL"
+        run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
